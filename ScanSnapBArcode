@@ -1,0 +1,195 @@
+Tepegöz Tarayıcı
+
+
+#Kütüphaneler
+import cv2
+import numpy as np
+from fpdf import FPDF
+from os import listdir
+import RPi.GPIO as GPIO
+import datetime
+from pyzbar.pyzbar import decode
+
+
+#Kamera açılış
+#cap2 = cv2.VideoCapture(1)
+cap = cv2.VideoCapture(0)
+
+#GPIO ayarlama
+GPIO.setmode(GPIO.BOARD)
+
+GPIO.setup(36,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(31,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+#çekilen fotoğrafta yeşil kenar belirleme fonksiyonu
+def rectify(h):
+    h = h.reshape((4, 2))
+    hnew = np.zeros((4, 2), dtype=np.float32)
+
+    add = h.sum(1)
+    hnew[0] = h[np.argmin(add)]
+    hnew[2] = h[np.argmax(add)]
+
+    diff = np.diff(h, axis=1)
+    hnew[1] = h[np.argmin(diff)]
+    hnew[3] = h[np.argmax(diff)]
+
+    return hnew
+
+#barkod okuyucuyu çalıştıran fonksiyon
+def barcodeReader(image, bgr):
+    gray_img = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    barcodes = decode(gray_img)
+
+    for decodedObject in barcodes:
+        points = decodedObject.polygon
+
+        pts = np.array(points, np.int32)
+        pts = pts.reshape((-1, 1, 2))
+        cv2.polylines(image, [pts], True, (0, 255, 0), 3)
+
+    for bc in barcodes:
+        cv2.putText(frame, bc.data.decode("utf-8") + " - " + bc.type, (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                    bgr, 2)
+
+        return "Barcode: {} - Type: {}".format(bc.data.decode("utf-8"), bc.type)
+
+bgr = (8, 70, 208)
+
+#döngü içinde değerleri kontrol etmemiz için kullanmış olduğumuz “i”
+i = 0
+
+
+while True:
+    #bu kısımda çekmiş olduğumuz fotoğrafların pencerede nasıl gözükeceğini belirliyoruz.	
+    while True:
+        ret, frame = cap.read()
+        #ret, frame2 = cap2.read()
+        cv2.imshow("AnaResim", frame)
+        #cv2.imshow("Deneme", frame2)
+        key = cv2.waitKey(30)
+        
+        #bu if e bağlı buton mevcut. Butona bastığımızda bu if içerisindeki komut çalışıyor	
+        if GPIO.input(31) == 0:
+            
+            i += 1
+            
+
+             
+            while i != 0:
+                #bu kısımda çekilen fotoğrafın kayıt edileceği yeri belirliyoruz.
+                #cv2.imshow("YakalananResim", frame)
+                cv2.imwrite('/home/pi/Desktop/Images/image' + str(i) + '.jpg', frame)
+
+                print("Fotograf Kaydedildi...")
+	    #bu kısımda kağıt üstündeki barkod çözümleme işlemi yapılıyor
+                barcode = barcodeReader(frame, bgr)
+                print(barcode)
+	    #burada ise alınmış olan barkod verisinin yazılacağı dosyayı belğirliyoruz.
+                dosya = open('/home/pi/Desktop/Barkod/Barkod' + str(i) + '.txt', "w")
+                print(barcode, file=dosya)
+                # dosya.close()
+                
+                break
+            
+            
+        #istenilen kadar fotoğraf çekildikten sonra pdf e dönüştürmek için diğer butona basılıyor
+        elif GPIO.input(36) == 0:
+	#ilk olarak çekilmiş fotoğrafın döndürme işlemini yapıyoruz.
+            while i != 0:
+                #rotate kısmı buraya eklenecek masaüstünde mevcut
+                #image = cv2.imread('/home/pi/Desktop/Images/image' + str(i) + '.jpg')
+                #image = cv2.resize(image, (960, 720)) bu kısım çözünürlük için önemli
+	    
+                image = cv2.imread('/home/pi/Desktop/deneme/image' + str(i) + '.jpg')
+                img_rotate_clockwise = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+                image = cv2.resize(img_rotate_clockwise, (1920, 1080))
+
+                orig = image.copy()
+	    #pdf e dönüştürmeden önce resmin rengini değiştiriyoruz.
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+                edged = cv2.Canny(blurred, 0, 50)
+                orig_edged = edged.copy()
+	     #fotoğrafı çekilen kağıdın çerçevesini belirleyen kısım
+                (_ ,contours, _) = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+                contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+                for c in contours:
+                    p = cv2.arcLength(c, True)
+                    approx = cv2.approxPolyDP(c, 0.02 * p, True)
+
+                    if len(approx) == 4:
+                        target = approx
+
+                        break
+	    #çekilen görüntünün ekranda merkezlenmesi
+                approx = rectify(target)
+                pts2 = np.float32([[0, 0], [800, 0], [800, 800], [0, 800]])
+                #fotoğrafı çekilen kağıdın çerçevesini belirleyen kısım
+                M = cv2.getPerspectiveTransform(approx, pts2)
+                dst = cv2.warpPerspective(orig, M, (800, 800))
+                cv2.drawContours(image, [target], -1, (0, 255, 0), 2)
+	     #görüntünün rengi ile oynandığı kısım
+                dst = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
+                #T = threshold_local(dst, 51, offset=9, method = "gaussian")
+                #dst = (dst > T).astype("uint8") * 255
+	     
+                #cv2.imshow("YesilKenar.jpg", image)
+                cv2.imshow("Hedef.jpg", dst)
+
+	     #fotoğraf işlemleri bittikten sonra kaydettiği yer
+                cv2.imwrite('/home/pi/Desktop/CropImages/image' + str(i) + '.jpg', dst)
+
+                i -= 1
+
+            break
+        
+        
+    path = "/home/pi/Desktop/CropImages/"
+
+    imagelist = listdir(path)
+
+    #pdf formatını belirlediğimiz kısım
+    pdf = FPDF('P', 'mm', 'A4')
+
+    x, y, w, h = 0, 0, 210, 297
+    
+    #çekilen tüm görüntüleri pdf e dönüştürdüğü kısım
+    for image in imagelist:
+        pdf.add_page()
+        pdf.image(path + image, x, y, w, h)
+
+    #pdf oluştururken dosya adlarında kullanmış olduğumuz gün ay yıl fonksiyonları
+    tarih = datetime.datetime.now()
+    t1 = tarih.strftime("%d")
+    t2 = tarih.strftime("%b")
+    t3 = tarih.strftime("%Y")
+    t4 = tarih.strftime("%H")
+    t5 = tarih.strftime("%M")
+    t6 = tarih.strftime("%S")
+
+    dosyaadi = "/home/pi/Desktop/PDFhazir/" + str(t1 + t2 + t3 + t4 + t5 + t6) + ".pdf"
+    pdf.output(dosyaadi, 'F')
+
+
+    #daha önce çekmiş olduğumuz fotoğrafların cihazdan silinmesi için yazılan kısım. Bu kısım j den bağımsız şekilde yeniden yazılmalı
+    j = 99
+
+    while 0 < j < 100:
+        try:
+            cv2.os.remove('/home/pi/Desktop/Images/image' + str(j) + '.jpg')
+            cv2.os.remove('/home/pi/Desktop/CropImages/image' + str(j) + '.jpg')
+        except:
+            pass
+        j -= 1
+
+    print("PDF'e dönüştürme ve Barkod okuma işlemi başarılı bir şekilde tamamlanmıştır...")
+
+    continue
+
+GPIO.cleanup()
+
+  
+
